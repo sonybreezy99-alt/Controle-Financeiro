@@ -145,9 +145,9 @@
         if(!form.description.trim()||!form.amount) return;
         setSyncing(true);
         const {error} = await sb.from("transactions").insert({
-          type:form.type,description:form.description.trim(),
-          amount:parseFloat(form.amount),category:form.category,
-          owner:form.owner,date:form.date,
+          type:form.type, description:form.description.trim(),
+          amount:parseFloat(form.amount), category:form.category,
+          owner:form.owner, date:form.date,
         });
         setSyncing(false);
         if(error){ showToast("Erro ao salvar","error"); return; }
@@ -165,8 +165,8 @@
         if(!goalForm.name.trim()||!goalForm.target) return;
         setSyncing(true);
         const {error} = await sb.from("goals").insert({
-          name:goalForm.name.trim(),target:parseFloat(goalForm.target),
-          saved:parseFloat(goalForm.saved||0),owner:goalForm.owner,
+          name:goalForm.name.trim(), target:parseFloat(goalForm.target),
+          saved:parseFloat(goalForm.saved||0), owner:goalForm.owner,
         });
         setSyncing(false);
         if(error){ showToast("Erro ao criar meta","error"); return; }
@@ -191,10 +191,10 @@
         if(!billForm.name.trim()||!billForm.amount) return;
         setSyncing(true);
         const {error} = await sb.from("fixed_bills").insert({
-          name:billForm.name.trim(),amount:parseFloat(billForm.amount),
-          category:billForm.category,owner:billForm.owner,
+          name:billForm.name.trim(), amount:parseFloat(billForm.amount),
+          category:billForm.category, owner:billForm.owner,
           due_day:parseInt(billForm.due_day)||1,
-          paid:false,
+          paid:false, transaction_id:null,
         });
         setSyncing(false);
         if(error){ showToast("Erro ao salvar","error"); return; }
@@ -203,13 +203,38 @@
         showToast("Conta fixa adicionada! 📌");
       }
 
-      async function togglePaid(id, current) {
-        await sb.from("fixed_bills").update({paid:!current}).eq("id",id);
-        showToast(!current ? "✅ Marcada como paga!" : "↩️ Marcada como pendente");
+      async function togglePaid(bill) {
+        setSyncing(true);
+        if(!bill.paid) {
+          // Marcar como pago → cria despesa nas transações
+          const {data:tx, error:txErr} = await sb.from("transactions").insert({
+            type:"expense",
+            description:`📌 ${bill.name}`,
+            amount:parseFloat(bill.amount),
+            category:bill.category,
+            owner:bill.owner,
+            date:today(),
+          }).select().single();
+          if(txErr){ showToast("Erro ao lançar despesa","error"); setSyncing(false); return; }
+          await sb.from("fixed_bills").update({paid:true, transaction_id:tx.id}).eq("id",bill.id);
+          showToast("✅ Pago e lançado como despesa!");
+        } else {
+          // Desfazer → remove a despesa gerada
+          if(bill.transaction_id) {
+            await sb.from("transactions").delete().eq("id",bill.transaction_id);
+          }
+          await sb.from("fixed_bills").update({paid:false, transaction_id:null}).eq("id",bill.id);
+          showToast("↩️ Pagamento desfeito","info");
+        }
+        setSyncing(false);
       }
 
-      async function deleteBill(id) {
-        await sb.from("fixed_bills").delete().eq("id",id);
+      async function deleteBill(bill) {
+        // Se estava paga, remove a transação associada também
+        if(bill.paid && bill.transaction_id) {
+          await sb.from("transactions").delete().eq("id",bill.transaction_id);
+        }
+        await sb.from("fixed_bills").delete().eq("id",bill.id);
         showToast("Removida","info");
       }
 
@@ -316,7 +341,8 @@
                     <div style={{fontSize:13,fontWeight:700,color:T.text}}>📌 Contas Fixas</div>
                     <button onClick={()=>setScreen("bills")} style={{fontSize:12,color:T.erick,background:"none",border:"none",cursor:"pointer",fontWeight:600,padding:0}}>Ver todas →</button>
                   </div>
-                  <div style={{display:"flex",gap:10,marginBottom:12}}>
+                  <Bar value={bills.filter(b=>b.paid).length} max={bills.length} color={T.income}/>
+                  <div style={{display:"flex",gap:10,marginTop:12}}>
                     <div style={{flex:1,background:T.incomeLight,borderRadius:12,padding:"10px 14px"}}>
                       <div style={{fontSize:11,color:T.income,fontWeight:600,marginBottom:2}}>✅ Pagas</div>
                       <div style={{fontSize:16,fontWeight:800,color:T.income}}>{fmt(billStats.paidTotal)}</div>
@@ -326,8 +352,7 @@
                       <div style={{fontSize:16,fontWeight:800,color:T.expense}}>{fmt(billStats.pendingTotal)}</div>
                     </div>
                   </div>
-                  <Bar value={billStats.paidTotal} max={billStats.total} color={T.income}/>
-                  <div style={{fontSize:11,color:T.subtle,marginTop:6,textAlign:"right"}}>{bills.filter(b=>b.paid).length} de {bills.length} pagas</div>
+                  <div style={{fontSize:11,color:T.subtle,marginTop:8,textAlign:"center"}}>{bills.filter(b=>b.paid).length} de {bills.length} pagas este mês</div>
                 </Card>
               )}
 
@@ -359,7 +384,7 @@
                 ) : stats.monthTx.slice(0,5).map((t,i)=>(
                   <div key={t.id} style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"11px 0",borderBottom:i<Math.min(stats.monthTx.length,5)-1?`1px solid ${T.border}`:"none"}}>
                     <div style={{display:"flex",alignItems:"center",gap:10}}>
-                      <div style={{width:38,height:38,borderRadius:12,fontSize:16,background:t.type==="income"?T.incomeLight:T.expenseLight,display:"flex",alignItems:"center",justifyContent:"center"}}>{CAT_ICONS[t.category]||"📦"}</div>
+                      <div style={{width:38,height:38,borderRadius:12,fontSize:16,background:t.type==="income"?T.incomeLight:T.expenseLight,display:"flex",alignItems:"center",justifyContent:"center"}}>{t.description.startsWith("📌")?"📌":CAT_ICONS[t.category]||"📦"}</div>
                       <div>
                         <div style={{fontSize:13,fontWeight:600,color:T.text}}>{t.description}</div>
                         <div style={{display:"flex",gap:5,alignItems:"center",marginTop:3}}>
@@ -435,24 +460,30 @@
                 <Card style={{padding:20}}><EmptyState icon="📋" title="Nenhum lançamento" sub="Sem dados para este período"/></Card>
               ) : (
                 <Card style={{padding:20}}>
-                  {filteredHistory.map((t,i)=>(
-                    <div key={t.id} style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"12px 0",borderBottom:i<filteredHistory.length-1?`1px solid ${T.border}`:"none"}}>
-                      <div style={{display:"flex",alignItems:"center",gap:10}}>
-                        <div style={{width:40,height:40,borderRadius:12,fontSize:18,background:t.type==="income"?T.incomeLight:T.expenseLight,display:"flex",alignItems:"center",justifyContent:"center"}}>{CAT_ICONS[t.category]||"📦"}</div>
-                        <div>
-                          <div style={{fontSize:13,fontWeight:600,color:T.text}}>{t.description}</div>
-                          <div style={{display:"flex",gap:5,alignItems:"center",marginTop:3}}>
-                            <OwnerBadge owner={t.owner}/>
-                            <span style={{fontSize:11,color:T.subtle}}>{t.date.slice(5).replace("-","/")}</span>
+                  {filteredHistory.map((t,i)=>{
+                    const isFixed = t.description && t.description.startsWith("📌");
+                    return (
+                      <div key={t.id} style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"12px 0",borderBottom:i<filteredHistory.length-1?`1px solid ${T.border}`:"none"}}>
+                        <div style={{display:"flex",alignItems:"center",gap:10}}>
+                          <div style={{width:40,height:40,borderRadius:12,fontSize:18,background:t.type==="income"?T.incomeLight:T.expenseLight,display:"flex",alignItems:"center",justifyContent:"center"}}>{isFixed?"📌":CAT_ICONS[t.category]||"📦"}</div>
+                          <div>
+                            <div style={{fontSize:13,fontWeight:600,color:T.text}}>{t.description}</div>
+                            <div style={{display:"flex",gap:5,alignItems:"center",marginTop:3}}>
+                              <OwnerBadge owner={t.owner}/>
+                              {isFixed && <span style={{fontSize:10,background:"#EEF2FF",color:"#3730A3",fontWeight:700,padding:"1px 6px",borderRadius:99}}>FIXA</span>}
+                              <span style={{fontSize:11,color:T.subtle}}>{t.date.slice(5).replace("-","/")}</span>
+                            </div>
                           </div>
                         </div>
+                        <div style={{display:"flex",alignItems:"center",gap:8}}>
+                          <div style={{fontSize:14,fontWeight:700,color:t.type==="income"?T.income:T.expense}}>{t.type==="income"?"+":"-"}{fmt(t.amount)}</div>
+                          {!isFixed && (
+                            <button onClick={()=>deleteTransaction(t.id)} style={{width:28,height:28,borderRadius:8,border:"none",background:T.expenseLight,color:T.expense,fontSize:14,cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center"}}>×</button>
+                          )}
+                        </div>
                       </div>
-                      <div style={{display:"flex",alignItems:"center",gap:8}}>
-                        <div style={{fontSize:14,fontWeight:700,color:t.type==="income"?T.income:T.expense}}>{t.type==="income"?"+":"-"}{fmt(t.amount)}</div>
-                        <button onClick={()=>deleteTransaction(t.id)} style={{width:28,height:28,borderRadius:8,border:"none",background:T.expenseLight,color:T.expense,fontSize:14,cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center"}}>×</button>
-                      </div>
-                    </div>
-                  ))}
+                    );
+                  })}
                 </Card>
               )}
             </div>
@@ -537,13 +568,12 @@
                 </Card>
               </div>
 
-              {/* Progresso de pagamento */}
               <Card style={{padding:20}}>
                 <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}}>
                   <div style={{fontSize:13,fontWeight:700,color:T.text}}>Progresso do mês</div>
                   <span style={{fontSize:12,color:T.muted}}>{bills.filter(b=>b.paid).length}/{bills.length} pagas</span>
                 </div>
-                <Bar value={bills.filter(b=>b.paid).length} max={bills.length} color={T.income}/>
+                <Bar value={bills.filter(b=>b.paid).length} max={bills.length||1} color={T.income}/>
                 <div style={{display:"flex",gap:10,marginTop:12}}>
                   <div style={{flex:1,background:T.incomeLight,borderRadius:12,padding:"10px 14px"}}>
                     <div style={{fontSize:11,color:T.income,fontWeight:600,marginBottom:2}}>✅ Pagas</div>
@@ -553,6 +583,9 @@
                     <div style={{fontSize:11,color:T.expense,fontWeight:600,marginBottom:2}}>⏳ Pendentes</div>
                     <div style={{fontSize:16,fontWeight:800,color:T.expense}}>{fmt(billStats.pendingTotal)}</div>
                   </div>
+                </div>
+                <div style={{marginTop:12,padding:"10px 14px",background:"#F8FAFC",borderRadius:12,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+                  <span style={{fontSize:12,color:T.muted,fontWeight:600}}>💡 Ao marcar como pago, a despesa é lançada automaticamente no saldo</span>
                 </div>
               </Card>
 
@@ -615,42 +648,41 @@
                         const isOverdue = !isPaid && b.due_day < today_day;
                         const isDueSoon = !isPaid && b.due_day >= today_day && b.due_day <= today_day+3;
                         return (
-                          <Card key={b.id} style={{padding:0,overflow:"hidden",opacity:isPaid?0.75:1,transition:"opacity 0.2s"}}>
+                          <Card key={b.id} style={{padding:0,overflow:"hidden",opacity:isPaid?0.8:1,transition:"opacity 0.2s"}}>
                             <div style={{display:"flex",alignItems:"stretch"}}>
                               <div style={{width:5,background:isPaid?"#D1D5DB":cg,flexShrink:0}}/>
                               <div style={{flex:1,padding:"14px 16px"}}>
                                 <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:10}}>
                                   <div style={{display:"flex",alignItems:"center",gap:10}}>
-                                    <div style={{width:38,height:38,borderRadius:12,background:isPaid?"#F3F4F6":owner==="Erick"?T.erickLight:T.biaLight,display:"flex",alignItems:"center",justifyContent:"center",fontSize:18,flexShrink:0,transition:"background 0.2s"}}>
+                                    <div style={{width:38,height:38,borderRadius:12,background:isPaid?"#F3F4F6":owner==="Erick"?T.erickLight:T.biaLight,display:"flex",alignItems:"center",justifyContent:"center",fontSize:18,flexShrink:0}}>
                                       {isPaid?"✅":CAT_ICONS[b.category]||"📦"}
                                     </div>
                                     <div>
                                       <div style={{fontSize:14,fontWeight:700,color:isPaid?T.muted:T.text,textDecoration:isPaid?"line-through":"none"}}>{b.name}</div>
-                                      <div style={{display:"flex",gap:6,alignItems:"center",marginTop:3}}>
+                                      <div style={{display:"flex",gap:6,alignItems:"center",marginTop:3,flexWrap:"wrap"}}>
                                         <span style={{fontSize:11,color:T.subtle}}>{b.category}</span>
-                                        {b.due_day && !isPaid && (
+                                        {!isPaid && b.due_day && (
                                           <span style={{fontSize:11,fontWeight:600,color:isOverdue?T.expense:isDueSoon?"#D97706":T.subtle,background:isOverdue?T.expenseLight:isDueSoon?"#FEF3C7":"transparent",padding:isOverdue||isDueSoon?"1px 6px":"0",borderRadius:99}}>
                                             {isOverdue?"⚠️ Venceu dia":"Vence dia"} {b.due_day}
                                           </span>
                                         )}
-                                        {isPaid && <span style={{fontSize:11,color:T.income,fontWeight:600}}>✓ Pago</span>}
+                                        {isPaid && <span style={{fontSize:11,color:T.income,fontWeight:600}}>✓ Lançado no saldo</span>}
                                       </div>
                                     </div>
                                   </div>
-                                  <div style={{fontSize:16,fontWeight:800,color:isPaid?T.muted:c}}>{fmt(b.amount)}</div>
+                                  <div style={{fontSize:16,fontWeight:800,color:isPaid?T.muted:c,flexShrink:0}}>{fmt(b.amount)}</div>
                                 </div>
-
-                                {/* Botões */}
                                 <div style={{display:"flex",gap:8}}>
-                                  <button onClick={()=>togglePaid(b.id,b.paid)} style={{
+                                  <button onClick={()=>togglePaid(b)} disabled={syncing} style={{
                                     flex:1,padding:"9px 0",border:"none",borderRadius:10,cursor:"pointer",
                                     fontWeight:700,fontSize:13,transition:"all 0.2s",
                                     background:isPaid?"#F3F4F6":T.incomeLight,
                                     color:isPaid?T.muted:T.income,
+                                    opacity:syncing?0.6:1,
                                   }}>
-                                    {isPaid?"↩️ Desfazer":"✅ Marcar como pago"}
+                                    {isPaid?"↩️ Desfazer pagamento":"✅ Marcar como pago"}
                                   </button>
-                                  <button onClick={()=>deleteBill(b.id)} style={{width:36,height:36,borderRadius:10,border:"none",background:T.expenseLight,color:T.expense,fontSize:14,cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0}}>×</button>
+                                  <button onClick={()=>deleteBill(b)} style={{width:36,height:36,borderRadius:10,border:"none",background:T.expenseLight,color:T.expense,fontSize:14,cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0}}>×</button>
                                 </div>
                               </div>
                             </div>
