@@ -194,12 +194,18 @@
           name:billForm.name.trim(),amount:parseFloat(billForm.amount),
           category:billForm.category,owner:billForm.owner,
           due_day:parseInt(billForm.due_day)||1,
+          paid:false,
         });
         setSyncing(false);
         if(error){ showToast("Erro ao salvar","error"); return; }
         setBillForm({name:"",amount:"",category:"Moradia",owner:"Erick",due_day:"1"});
         setAddBillMode(false);
         showToast("Conta fixa adicionada! 📌");
+      }
+
+      async function togglePaid(id, current) {
+        await sb.from("fixed_bills").update({paid:!current}).eq("id",id);
+        showToast(!current ? "✅ Marcada como paga!" : "↩️ Marcada como pendente");
       }
 
       async function deleteBill(id) {
@@ -235,7 +241,9 @@
       const billStats = useMemo(()=>{
         const erickTotal = bills.filter(b=>b.owner==="Erick").reduce((s,b)=>s+parseFloat(b.amount),0);
         const biaTotal = bills.filter(b=>b.owner==="Bia").reduce((s,b)=>s+parseFloat(b.amount),0);
-        return {erickTotal, biaTotal, total: erickTotal+biaTotal};
+        const paidTotal = bills.filter(b=>b.paid).reduce((s,b)=>s+parseFloat(b.amount),0);
+        const pendingTotal = bills.filter(b=>!b.paid).reduce((s,b)=>s+parseFloat(b.amount),0);
+        return {erickTotal,biaTotal,total:erickTotal+biaTotal,paidTotal,pendingTotal};
       },[bills]);
 
       const today_day = new Date().getDate();
@@ -302,27 +310,24 @@
                 ))}
               </div>
 
-              {/* Bills summary on dashboard */}
               {bills.length>0 && (
                 <Card style={{padding:20}}>
                   <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:14}}>
                     <div style={{fontSize:13,fontWeight:700,color:T.text}}>📌 Contas Fixas</div>
                     <button onClick={()=>setScreen("bills")} style={{fontSize:12,color:T.erick,background:"none",border:"none",cursor:"pointer",fontWeight:600,padding:0}}>Ver todas →</button>
                   </div>
-                  <div style={{display:"flex",gap:10,marginBottom:14}}>
-                    <div style={{flex:1,background:T.erickLight,borderRadius:12,padding:"10px 14px"}}>
-                      <div style={{fontSize:11,color:T.erick,fontWeight:600,marginBottom:2}}>Erick</div>
-                      <div style={{fontSize:16,fontWeight:800,color:T.erick}}>{fmt(billStats.erickTotal)}</div>
+                  <div style={{display:"flex",gap:10,marginBottom:12}}>
+                    <div style={{flex:1,background:T.incomeLight,borderRadius:12,padding:"10px 14px"}}>
+                      <div style={{fontSize:11,color:T.income,fontWeight:600,marginBottom:2}}>✅ Pagas</div>
+                      <div style={{fontSize:16,fontWeight:800,color:T.income}}>{fmt(billStats.paidTotal)}</div>
                     </div>
-                    <div style={{flex:1,background:T.biaLight,borderRadius:12,padding:"10px 14px"}}>
-                      <div style={{fontSize:11,color:T.bia,fontWeight:600,marginBottom:2}}>Bia</div>
-                      <div style={{fontSize:16,fontWeight:800,color:T.bia}}>{fmt(billStats.biaTotal)}</div>
+                    <div style={{flex:1,background:T.expenseLight,borderRadius:12,padding:"10px 14px"}}>
+                      <div style={{fontSize:11,color:T.expense,fontWeight:600,marginBottom:2}}>⏳ Pendentes</div>
+                      <div style={{fontSize:16,fontWeight:800,color:T.expense}}>{fmt(billStats.pendingTotal)}</div>
                     </div>
                   </div>
-                  <div style={{borderTop:`1px solid ${T.border}`,paddingTop:12,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
-                    <span style={{fontSize:12,color:T.muted}}>Total mensal</span>
-                    <span style={{fontSize:15,fontWeight:800,color:T.text}}>{fmt(billStats.total)}</span>
-                  </div>
+                  <Bar value={billStats.paidTotal} max={billStats.total} color={T.income}/>
+                  <div style={{fontSize:11,color:T.subtle,marginTop:6,textAlign:"right"}}>{bills.filter(b=>b.paid).length} de {bills.length} pagas</div>
                 </Card>
               )}
 
@@ -519,7 +524,6 @@
           {screen==="bills" && (
             <div style={{padding:16,display:"flex",flexDirection:"column",gap:12}}>
 
-              {/* Totais */}
               <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}>
                 <Card style={{padding:16,background:"linear-gradient(135deg,#1E40AF,#2563EB)",border:"none"}}>
                   <div style={{fontSize:11,color:"rgba(255,255,255,0.6)",fontWeight:600,marginBottom:4}}>ERICK</div>
@@ -533,12 +537,25 @@
                 </Card>
               </div>
 
-              <Card style={{padding:16,background:"linear-gradient(135deg,#0F172A,#1E293B)",border:"none"}}>
-                <div style={{fontSize:11,color:"rgba(255,255,255,0.5)",fontWeight:600,marginBottom:4}}>TOTAL MENSAL DO CASAL</div>
-                <div style={{fontSize:28,fontWeight:800,color:"#fff"}}>{fmt(billStats.total)}</div>
+              {/* Progresso de pagamento */}
+              <Card style={{padding:20}}>
+                <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}}>
+                  <div style={{fontSize:13,fontWeight:700,color:T.text}}>Progresso do mês</div>
+                  <span style={{fontSize:12,color:T.muted}}>{bills.filter(b=>b.paid).length}/{bills.length} pagas</span>
+                </div>
+                <Bar value={bills.filter(b=>b.paid).length} max={bills.length} color={T.income}/>
+                <div style={{display:"flex",gap:10,marginTop:12}}>
+                  <div style={{flex:1,background:T.incomeLight,borderRadius:12,padding:"10px 14px"}}>
+                    <div style={{fontSize:11,color:T.income,fontWeight:600,marginBottom:2}}>✅ Pagas</div>
+                    <div style={{fontSize:16,fontWeight:800,color:T.income}}>{fmt(billStats.paidTotal)}</div>
+                  </div>
+                  <div style={{flex:1,background:T.expenseLight,borderRadius:12,padding:"10px 14px"}}>
+                    <div style={{fontSize:11,color:T.expense,fontWeight:600,marginBottom:2}}>⏳ Pendentes</div>
+                    <div style={{fontSize:16,fontWeight:800,color:T.expense}}>{fmt(billStats.pendingTotal)}</div>
+                  </div>
+                </div>
               </Card>
 
-              {/* Add button */}
               {!addBillMode ? (
                 <button onClick={()=>setAddBillMode(true)} style={{width:"100%",padding:16,border:`2px dashed ${T.erickMid}`,borderRadius:16,background:T.erickLight,color:T.erick,fontSize:14,fontWeight:700,cursor:"pointer"}}>+ Nova conta fixa</button>
               ) : (
@@ -580,12 +597,10 @@
                 <Card style={{padding:20}}><EmptyState icon="📌" title="Nenhuma conta fixa" sub="Adicione as contas mensais de vocês!"/></Card>
               )}
 
-              {/* Bills por responsável */}
               {["Erick","Bia"].map(owner=>{
                 const ownerBills = bills.filter(b=>b.owner===owner);
                 if(ownerBills.length===0) return null;
                 const c = owner==="Erick"?T.erick:T.bia;
-                const cl = owner==="Erick"?T.erickLight:T.biaLight;
                 const cg = owner==="Erick"?"linear-gradient(135deg,#1E40AF,#2563EB)":"linear-gradient(135deg,#BE185D,#DB2777)";
                 return (
                   <div key={owner}>
@@ -596,34 +611,46 @@
                     </div>
                     <div style={{display:"flex",flexDirection:"column",gap:8}}>
                       {ownerBills.map(b=>{
-                        const isOverdue = b.due_day < today_day;
-                        const isDueToday = b.due_day === today_day;
-                        const isDueSoon = b.due_day > today_day && b.due_day <= today_day+3;
+                        const isPaid = b.paid;
+                        const isOverdue = !isPaid && b.due_day < today_day;
+                        const isDueSoon = !isPaid && b.due_day >= today_day && b.due_day <= today_day+3;
                         return (
-                          <Card key={b.id} style={{padding:0,overflow:"hidden"}}>
+                          <Card key={b.id} style={{padding:0,overflow:"hidden",opacity:isPaid?0.75:1,transition:"opacity 0.2s"}}>
                             <div style={{display:"flex",alignItems:"stretch"}}>
-                              {/* Color bar */}
-                              <div style={{width:5,background:cg,flexShrink:0}}/>
-                              <div style={{flex:1,padding:"14px 16px",display:"flex",alignItems:"center",justifyContent:"space-between"}}>
-                                <div style={{display:"flex",alignItems:"center",gap:12}}>
-                                  <div style={{width:40,height:40,borderRadius:12,background:cl,display:"flex",alignItems:"center",justifyContent:"center",fontSize:18,flexShrink:0}}>
-                                    {CAT_ICONS[b.category]||"📦"}
-                                  </div>
-                                  <div>
-                                    <div style={{fontSize:14,fontWeight:700,color:T.text}}>{b.name}</div>
-                                    <div style={{display:"flex",gap:6,alignItems:"center",marginTop:3}}>
-                                      <span style={{fontSize:11,color:T.subtle}}>{b.category}</span>
-                                      {b.due_day && (
-                                        <span style={{fontSize:11,fontWeight:600,color:isOverdue?T.expense:isDueToday?"#D97706":isDueSoon?"#D97706":T.subtle,background:isOverdue?T.expenseLight:isDueToday||isDueSoon?"#FEF3C7":"transparent",padding:isOverdue||isDueToday||isDueSoon?"1px 6px":"0",borderRadius:99}}>
-                                          {isOverdue?"Venceu dia":"Vence dia"} {b.due_day}
-                                        </span>
-                                      )}
+                              <div style={{width:5,background:isPaid?"#D1D5DB":cg,flexShrink:0}}/>
+                              <div style={{flex:1,padding:"14px 16px"}}>
+                                <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:10}}>
+                                  <div style={{display:"flex",alignItems:"center",gap:10}}>
+                                    <div style={{width:38,height:38,borderRadius:12,background:isPaid?"#F3F4F6":owner==="Erick"?T.erickLight:T.biaLight,display:"flex",alignItems:"center",justifyContent:"center",fontSize:18,flexShrink:0,transition:"background 0.2s"}}>
+                                      {isPaid?"✅":CAT_ICONS[b.category]||"📦"}
+                                    </div>
+                                    <div>
+                                      <div style={{fontSize:14,fontWeight:700,color:isPaid?T.muted:T.text,textDecoration:isPaid?"line-through":"none"}}>{b.name}</div>
+                                      <div style={{display:"flex",gap:6,alignItems:"center",marginTop:3}}>
+                                        <span style={{fontSize:11,color:T.subtle}}>{b.category}</span>
+                                        {b.due_day && !isPaid && (
+                                          <span style={{fontSize:11,fontWeight:600,color:isOverdue?T.expense:isDueSoon?"#D97706":T.subtle,background:isOverdue?T.expenseLight:isDueSoon?"#FEF3C7":"transparent",padding:isOverdue||isDueSoon?"1px 6px":"0",borderRadius:99}}>
+                                            {isOverdue?"⚠️ Venceu dia":"Vence dia"} {b.due_day}
+                                          </span>
+                                        )}
+                                        {isPaid && <span style={{fontSize:11,color:T.income,fontWeight:600}}>✓ Pago</span>}
+                                      </div>
                                     </div>
                                   </div>
+                                  <div style={{fontSize:16,fontWeight:800,color:isPaid?T.muted:c}}>{fmt(b.amount)}</div>
                                 </div>
-                                <div style={{display:"flex",alignItems:"center",gap:8}}>
-                                  <div style={{fontSize:16,fontWeight:800,color:c}}>{fmt(b.amount)}</div>
-                                  <button onClick={()=>deleteBill(b.id)} style={{width:28,height:28,borderRadius:8,border:"none",background:T.expenseLight,color:T.expense,fontSize:14,cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center"}}>×</button>
+
+                                {/* Botões */}
+                                <div style={{display:"flex",gap:8}}>
+                                  <button onClick={()=>togglePaid(b.id,b.paid)} style={{
+                                    flex:1,padding:"9px 0",border:"none",borderRadius:10,cursor:"pointer",
+                                    fontWeight:700,fontSize:13,transition:"all 0.2s",
+                                    background:isPaid?"#F3F4F6":T.incomeLight,
+                                    color:isPaid?T.muted:T.income,
+                                  }}>
+                                    {isPaid?"↩️ Desfazer":"✅ Marcar como pago"}
+                                  </button>
+                                  <button onClick={()=>deleteBill(b.id)} style={{width:36,height:36,borderRadius:10,border:"none",background:T.expenseLight,color:T.expense,fontSize:14,cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0}}>×</button>
                                 </div>
                               </div>
                             </div>
