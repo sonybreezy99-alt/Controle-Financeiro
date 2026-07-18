@@ -85,6 +85,7 @@
       const [screen, setScreen] = useState("dashboard");
       const [transactions, setTransactions] = useState([]);
       const [goals, setGoals] = useState([]);
+      const [bills, setBills] = useState([]);
       const [loading, setLoading] = useState(true);
       const [syncing, setSyncing] = useState(false);
       const [toast, setToast] = useState(null);
@@ -92,8 +93,10 @@
       const filterYear = new Date().getFullYear();
       const [filterOwner, setFilterOwner] = useState("all");
       const [addGoalMode, setAddGoalMode] = useState(false);
+      const [addBillMode, setAddBillMode] = useState(false);
       const [form, setForm] = useState({type:"expense",description:"",amount:"",category:"Alimentação",owner:"Erick",date:today()});
       const [goalForm, setGoalForm] = useState({name:"",target:"",owner:"Erick",saved:"0"});
+      const [billForm, setBillForm] = useState({name:"",amount:"",category:"Moradia",owner:"Erick",due_day:"1"});
 
       function showToast(msg, type="success") {
         setToast({msg,type});
@@ -103,12 +106,14 @@
       useEffect(()=>{
         (async()=>{
           try {
-            const [{data:txs},{data:gs}] = await Promise.all([
+            const [{data:txs},{data:gs},{data:bs}] = await Promise.all([
               sb.from("transactions").select("*").order("date",{ascending:false}),
               sb.from("goals").select("*").order("id",{ascending:true}),
+              sb.from("fixed_bills").select("*").order("due_day",{ascending:true}),
             ]);
             setTransactions(txs||[]);
             setGoals(gs||[]);
+            setBills(bs||[]);
           } catch(e){ showToast("Erro ao carregar","error"); }
           finally{ setLoading(false); }
         })();
@@ -127,7 +132,13 @@
             if(p.eventType==="DELETE") setGoals(prev=>prev.filter(g=>g.id!==p.old.id));
             if(p.eventType==="UPDATE") setGoals(prev=>prev.map(g=>g.id===p.new.id?p.new:g));
           }).subscribe();
-        return ()=>{ sb.removeChannel(chT); sb.removeChannel(chG); };
+        const chB = sb.channel("bills-rt")
+          .on("postgres_changes",{event:"*",schema:"public",table:"fixed_bills"},p=>{
+            if(p.eventType==="INSERT") setBills(prev=>[...prev,p.new].sort((a,b)=>a.due_day-b.due_day));
+            if(p.eventType==="DELETE") setBills(prev=>prev.filter(b=>b.id!==p.old.id));
+            if(p.eventType==="UPDATE") setBills(prev=>prev.map(b=>b.id===p.new.id?p.new:b));
+          }).subscribe();
+        return ()=>{ sb.removeChannel(chT); sb.removeChannel(chG); sb.removeChannel(chB); };
       },[]);
 
       async function addTransaction() {
@@ -176,6 +187,26 @@
         showToast("Meta removida","info");
       }
 
+      async function addBill() {
+        if(!billForm.name.trim()||!billForm.amount) return;
+        setSyncing(true);
+        const {error} = await sb.from("fixed_bills").insert({
+          name:billForm.name.trim(),amount:parseFloat(billForm.amount),
+          category:billForm.category,owner:billForm.owner,
+          due_day:parseInt(billForm.due_day)||1,
+        });
+        setSyncing(false);
+        if(error){ showToast("Erro ao salvar","error"); return; }
+        setBillForm({name:"",amount:"",category:"Moradia",owner:"Erick",due_day:"1"});
+        setAddBillMode(false);
+        showToast("Conta fixa adicionada! 📌");
+      }
+
+      async function deleteBill(id) {
+        await sb.from("fixed_bills").delete().eq("id",id);
+        showToast("Removida","info");
+      }
+
       const stats = useMemo(()=>{
         const monthTx = transactions.filter(t=>{
           const d = new Date(t.date+"T12:00:00");
@@ -201,6 +232,14 @@
         });
       },[transactions,filterMonth,filterYear,filterOwner]);
 
+      const billStats = useMemo(()=>{
+        const erickTotal = bills.filter(b=>b.owner==="Erick").reduce((s,b)=>s+parseFloat(b.amount),0);
+        const biaTotal = bills.filter(b=>b.owner==="Bia").reduce((s,b)=>s+parseFloat(b.amount),0);
+        return {erickTotal, biaTotal, total: erickTotal+biaTotal};
+      },[bills]);
+
+      const today_day = new Date().getDate();
+
       if(loading) return (
         <div style={{display:"flex",alignItems:"center",justifyContent:"center",height:"100vh",background:"#0F172A",flexDirection:"column",gap:12}}>
           <div style={{fontSize:40}}>💑</div>
@@ -219,17 +258,21 @@
 
           {/* Header */}
           <div style={{background:"#0F172A",padding:"52px 20px 20px"}}>
-            <div style={{display:"flex",gap:4,overflowX:"auto",paddingBottom:16,scrollbarWidth:"none"}}>
-              {MONTHS_SHORT.map((m,i)=>(
-                <button key={i} onClick={()=>setFilterMonth(i)} style={{padding:"5px 14px",border:"none",borderRadius:99,cursor:"pointer",background:filterMonth===i?"#fff":"rgba(255,255,255,0.08)",color:filterMonth===i?"#0F172A":"rgba(255,255,255,0.5)",fontSize:12,fontWeight:filterMonth===i?700:400,whiteSpace:"nowrap",transition:"all 0.15s"}}>
-                  {m}
-                </button>
-              ))}
-            </div>
+            {screen==="dashboard" && (
+              <div style={{display:"flex",gap:4,overflowX:"auto",paddingBottom:16,scrollbarWidth:"none"}}>
+                {MONTHS_SHORT.map((m,i)=>(
+                  <button key={i} onClick={()=>setFilterMonth(i)} style={{padding:"5px 14px",border:"none",borderRadius:99,cursor:"pointer",background:filterMonth===i?"#fff":"rgba(255,255,255,0.08)",color:filterMonth===i?"#0F172A":"rgba(255,255,255,0.5)",fontSize:12,fontWeight:filterMonth===i?700:400,whiteSpace:"nowrap",transition:"all 0.15s"}}>
+                    {m}
+                  </button>
+                ))}
+              </div>
+            )}
             <div style={{color:"rgba(255,255,255,0.4)",fontSize:11,fontWeight:600,letterSpacing:2,textTransform:"uppercase",marginBottom:4}}>
-              {screen==="dashboard"?"Visão Geral":screen==="add"?"Novo Lançamento":screen==="history"?"Histórico":"Metas do Casal"}
+              {screen==="dashboard"?"Visão Geral":screen==="add"?"Novo Lançamento":screen==="history"?"Histórico":screen==="goals"?"Metas do Casal":"Contas Fixas"}
             </div>
-            <div style={{color:"#fff",fontSize:26,fontWeight:800,letterSpacing:-0.5}}>{MONTHS[filterMonth]} {filterYear}</div>
+            <div style={{color:"#fff",fontSize:26,fontWeight:800,letterSpacing:-0.5}}>
+              {screen==="dashboard"?`${MONTHS[filterMonth]} ${filterYear}`:screen==="add"?"Lançamento":screen==="history"?"Histórico":screen==="goals"?"Metas 🎯":"Fixas 📌"}
+            </div>
             {syncing && <div style={{color:"rgba(255,255,255,0.4)",fontSize:11,marginTop:4}}>Sincronizando...</div>}
           </div>
 
@@ -258,6 +301,30 @@
                   </Card>
                 ))}
               </div>
+
+              {/* Bills summary on dashboard */}
+              {bills.length>0 && (
+                <Card style={{padding:20}}>
+                  <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:14}}>
+                    <div style={{fontSize:13,fontWeight:700,color:T.text}}>📌 Contas Fixas</div>
+                    <button onClick={()=>setScreen("bills")} style={{fontSize:12,color:T.erick,background:"none",border:"none",cursor:"pointer",fontWeight:600,padding:0}}>Ver todas →</button>
+                  </div>
+                  <div style={{display:"flex",gap:10,marginBottom:14}}>
+                    <div style={{flex:1,background:T.erickLight,borderRadius:12,padding:"10px 14px"}}>
+                      <div style={{fontSize:11,color:T.erick,fontWeight:600,marginBottom:2}}>Erick</div>
+                      <div style={{fontSize:16,fontWeight:800,color:T.erick}}>{fmt(billStats.erickTotal)}</div>
+                    </div>
+                    <div style={{flex:1,background:T.biaLight,borderRadius:12,padding:"10px 14px"}}>
+                      <div style={{fontSize:11,color:T.bia,fontWeight:600,marginBottom:2}}>Bia</div>
+                      <div style={{fontSize:16,fontWeight:800,color:T.bia}}>{fmt(billStats.biaTotal)}</div>
+                    </div>
+                  </div>
+                  <div style={{borderTop:`1px solid ${T.border}`,paddingTop:12,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+                    <span style={{fontSize:12,color:T.muted}}>Total mensal</span>
+                    <span style={{fontSize:15,fontWeight:800,color:T.text}}>{fmt(billStats.total)}</span>
+                  </div>
+                </Card>
+              )}
 
               {stats.cats.length>0 && (
                 <Card style={{padding:20}}>
@@ -312,7 +379,6 @@
                     <button key={v} onClick={()=>setForm(f=>({...f,type:v}))} style={{flex:1,padding:"10px 0",border:"none",borderRadius:10,background:form.type===v?c:"transparent",color:form.type===v?"#fff":T.muted,fontWeight:700,fontSize:14,cursor:"pointer",transition:"all 0.15s"}}>{l}</button>
                   ))}
                 </div>
-
                 <div style={{marginBottom:18}}>
                   <div style={{fontSize:12,fontWeight:600,color:T.muted,marginBottom:8,letterSpacing:0.5}}>RESPONSÁVEL</div>
                   <div style={{display:"flex",background:"#F8FAFC",borderRadius:14,padding:4}}>
@@ -321,15 +387,13 @@
                     ))}
                   </div>
                 </div>
-
                 {[{label:"DESCRIÇÃO",key:"description",type:"text",placeholder:"Ex: Conta de luz"},{label:"VALOR (R$)",key:"amount",type:"number",placeholder:"0,00"}].map(({label,key,type,placeholder})=>(
                   <div key={key} style={{marginBottom:16}}>
                     <div style={{fontSize:12,fontWeight:600,color:T.muted,marginBottom:7,letterSpacing:0.5}}>{label}</div>
                     <input type={type} value={form[key]} placeholder={placeholder} onChange={e=>setForm(f=>({...f,[key]:e.target.value}))}
-                      style={{width:"100%",padding:"13px 16px",border:`1.5px solid ${T.border}`,borderRadius:12,fontSize:15,outline:"none",boxSizing:"border-box",fontFamily:"inherit",color:T.text,background:"#FAFAFA"}}/>
+                      style={{width:"100%",padding:"13px 16px",border:`1.5px solid ${T.border}`,borderRadius:12,fontSize:15,outline:"none",fontFamily:"inherit",color:T.text,background:"#FAFAFA"}}/>
                   </div>
                 ))}
-
                 <div style={{marginBottom:16}}>
                   <div style={{fontSize:12,fontWeight:600,color:T.muted,marginBottom:7,letterSpacing:0.5}}>CATEGORIA</div>
                   <div style={{display:"flex",flexWrap:"wrap",gap:6}}>
@@ -340,13 +404,11 @@
                     ))}
                   </div>
                 </div>
-
                 <div style={{marginBottom:24}}>
                   <div style={{fontSize:12,fontWeight:600,color:T.muted,marginBottom:7,letterSpacing:0.5}}>DATA</div>
                   <input type="date" value={form.date} onChange={e=>setForm(f=>({...f,date:e.target.value}))}
-                    style={{width:"100%",padding:"13px 16px",border:`1.5px solid ${T.border}`,borderRadius:12,fontSize:14,outline:"none",boxSizing:"border-box",fontFamily:"inherit",color:T.text,background:"#FAFAFA"}}/>
+                    style={{width:"100%",padding:"13px 16px",border:`1.5px solid ${T.border}`,borderRadius:12,fontSize:14,outline:"none",fontFamily:"inherit",color:T.text,background:"#FAFAFA"}}/>
                 </div>
-
                 <button onClick={addTransaction} disabled={syncing} style={{width:"100%",padding:"15px",border:"none",borderRadius:14,background:form.type==="income"?T.income:T.expense,color:"#fff",fontSize:16,fontWeight:700,cursor:"pointer",opacity:syncing?0.7:1}}>
                   {syncing?"Salvando...":`Salvar ${form.type==="income"?"receita":"despesa"}`}
                 </button>
@@ -403,7 +465,7 @@
                     <div key={key} style={{marginBottom:14}}>
                       <div style={{fontSize:12,fontWeight:600,color:T.muted,marginBottom:6,letterSpacing:0.5}}>{label}</div>
                       <input type={type} value={goalForm[key]} placeholder={placeholder} onChange={e=>setGoalForm(f=>({...f,[key]:e.target.value}))}
-                        style={{width:"100%",padding:"12px 14px",border:`1.5px solid ${T.border}`,borderRadius:12,fontSize:14,outline:"none",boxSizing:"border-box",fontFamily:"inherit",color:T.text,background:"#FAFAFA"}}/>
+                        style={{width:"100%",padding:"12px 14px",border:`1.5px solid ${T.border}`,borderRadius:12,fontSize:14,outline:"none",fontFamily:"inherit",color:T.text,background:"#FAFAFA"}}/>
                     </div>
                   ))}
                   <div style={{marginBottom:18}}>
@@ -420,11 +482,9 @@
                   </div>
                 </Card>
               )}
-
               {goals.length===0&&!addGoalMode && (
                 <Card style={{padding:20}}><EmptyState icon="🎯" title="Nenhuma meta ainda" sub="Criem metas juntos e acompanhem o progresso!"/></Card>
               )}
-
               {goals.map(g=>{
                 const pct=g.target>0?Math.min(100,(parseFloat(g.saved)/parseFloat(g.target))*100):0;
                 const c=g.owner==="Erick"?T.erick:T.bia;
@@ -455,18 +515,140 @@
             </div>
           )}
 
+          {/* BILLS */}
+          {screen==="bills" && (
+            <div style={{padding:16,display:"flex",flexDirection:"column",gap:12}}>
+
+              {/* Totais */}
+              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}>
+                <Card style={{padding:16,background:"linear-gradient(135deg,#1E40AF,#2563EB)",border:"none"}}>
+                  <div style={{fontSize:11,color:"rgba(255,255,255,0.6)",fontWeight:600,marginBottom:4}}>ERICK</div>
+                  <div style={{fontSize:22,fontWeight:800,color:"#fff"}}>{fmt(billStats.erickTotal)}</div>
+                  <div style={{fontSize:11,color:"rgba(255,255,255,0.5)",marginTop:2}}>{bills.filter(b=>b.owner==="Erick").length} contas</div>
+                </Card>
+                <Card style={{padding:16,background:"linear-gradient(135deg,#BE185D,#DB2777)",border:"none"}}>
+                  <div style={{fontSize:11,color:"rgba(255,255,255,0.6)",fontWeight:600,marginBottom:4}}>BIA</div>
+                  <div style={{fontSize:22,fontWeight:800,color:"#fff"}}>{fmt(billStats.biaTotal)}</div>
+                  <div style={{fontSize:11,color:"rgba(255,255,255,0.5)",marginTop:2}}>{bills.filter(b=>b.owner==="Bia").length} contas</div>
+                </Card>
+              </div>
+
+              <Card style={{padding:16,background:"linear-gradient(135deg,#0F172A,#1E293B)",border:"none"}}>
+                <div style={{fontSize:11,color:"rgba(255,255,255,0.5)",fontWeight:600,marginBottom:4}}>TOTAL MENSAL DO CASAL</div>
+                <div style={{fontSize:28,fontWeight:800,color:"#fff"}}>{fmt(billStats.total)}</div>
+              </Card>
+
+              {/* Add button */}
+              {!addBillMode ? (
+                <button onClick={()=>setAddBillMode(true)} style={{width:"100%",padding:16,border:`2px dashed ${T.erickMid}`,borderRadius:16,background:T.erickLight,color:T.erick,fontSize:14,fontWeight:700,cursor:"pointer"}}>+ Nova conta fixa</button>
+              ) : (
+                <Card style={{padding:20}}>
+                  <div style={{fontSize:15,fontWeight:700,color:T.text,marginBottom:16}}>Nova Conta Fixa</div>
+                  {[{label:"NOME DA CONTA",key:"name",type:"text",placeholder:"Ex: Aluguel, Netflix..."},{label:"VALOR (R$)",key:"amount",type:"number",placeholder:"0,00"},{label:"DIA DO VENCIMENTO",key:"due_day",type:"number",placeholder:"10"}].map(({label,key,type,placeholder})=>(
+                    <div key={key} style={{marginBottom:14}}>
+                      <div style={{fontSize:12,fontWeight:600,color:T.muted,marginBottom:6,letterSpacing:0.5}}>{label}</div>
+                      <input type={type} value={billForm[key]} placeholder={placeholder} onChange={e=>setBillForm(f=>({...f,[key]:e.target.value}))}
+                        style={{width:"100%",padding:"12px 14px",border:`1.5px solid ${T.border}`,borderRadius:12,fontSize:14,outline:"none",fontFamily:"inherit",color:T.text,background:"#FAFAFA"}}/>
+                    </div>
+                  ))}
+                  <div style={{marginBottom:14}}>
+                    <div style={{fontSize:12,fontWeight:600,color:T.muted,marginBottom:7,letterSpacing:0.5}}>CATEGORIA</div>
+                    <div style={{display:"flex",flexWrap:"wrap",gap:6}}>
+                      {CATEGORIES.map(c=>(
+                        <button key={c} onClick={()=>setBillForm(f=>({...f,category:c}))} style={{padding:"6px 12px",border:`1.5px solid ${billForm.category===c?"#3730A3":T.border}`,borderRadius:99,background:billForm.category===c?"#EEF2FF":"#FAFAFA",color:billForm.category===c?"#3730A3":T.muted,fontSize:12,fontWeight:billForm.category===c?700:400,cursor:"pointer",display:"flex",alignItems:"center",gap:4}}>
+                          {CAT_ICONS[c]} {c}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                  <div style={{marginBottom:18}}>
+                    <div style={{fontSize:12,fontWeight:600,color:T.muted,marginBottom:8,letterSpacing:0.5}}>RESPONSÁVEL</div>
+                    <div style={{display:"flex",background:"#F8FAFC",borderRadius:14,padding:4}}>
+                      {[["Erick",T.erick],["Bia",T.bia]].map(([v,c])=>(
+                        <button key={v} onClick={()=>setBillForm(f=>({...f,owner:v}))} style={{flex:1,padding:"10px 0",border:"none",borderRadius:10,background:billForm.owner===v?c:"transparent",color:billForm.owner===v?"#fff":T.muted,fontWeight:700,fontSize:14,cursor:"pointer"}}>{v}</button>
+                      ))}
+                    </div>
+                  </div>
+                  <div style={{display:"flex",gap:8}}>
+                    <button onClick={()=>setAddBillMode(false)} style={{flex:1,padding:"12px",border:`1.5px solid ${T.border}`,borderRadius:12,background:"#fff",color:T.muted,fontSize:14,fontWeight:600,cursor:"pointer"}}>Cancelar</button>
+                    <button onClick={addBill} disabled={syncing} style={{flex:2,padding:"12px",border:"none",borderRadius:12,background:"#0F172A",color:"#fff",fontSize:14,fontWeight:700,cursor:"pointer"}}>Salvar</button>
+                  </div>
+                </Card>
+              )}
+
+              {bills.length===0&&!addBillMode && (
+                <Card style={{padding:20}}><EmptyState icon="📌" title="Nenhuma conta fixa" sub="Adicione as contas mensais de vocês!"/></Card>
+              )}
+
+              {/* Bills por responsável */}
+              {["Erick","Bia"].map(owner=>{
+                const ownerBills = bills.filter(b=>b.owner===owner);
+                if(ownerBills.length===0) return null;
+                const c = owner==="Erick"?T.erick:T.bia;
+                const cl = owner==="Erick"?T.erickLight:T.biaLight;
+                const cg = owner==="Erick"?"linear-gradient(135deg,#1E40AF,#2563EB)":"linear-gradient(135deg,#BE185D,#DB2777)";
+                return (
+                  <div key={owner}>
+                    <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:10,paddingLeft:4}}>
+                      <span style={{width:10,height:10,borderRadius:"50%",background:c,display:"inline-block"}}/>
+                      <span style={{fontSize:13,fontWeight:700,color:c}}>{owner}</span>
+                      <span style={{fontSize:12,color:T.subtle}}>· {fmt(ownerBills.reduce((s,b)=>s+parseFloat(b.amount),0))}/mês</span>
+                    </div>
+                    <div style={{display:"flex",flexDirection:"column",gap:8}}>
+                      {ownerBills.map(b=>{
+                        const isOverdue = b.due_day < today_day;
+                        const isDueToday = b.due_day === today_day;
+                        const isDueSoon = b.due_day > today_day && b.due_day <= today_day+3;
+                        return (
+                          <Card key={b.id} style={{padding:0,overflow:"hidden"}}>
+                            <div style={{display:"flex",alignItems:"stretch"}}>
+                              {/* Color bar */}
+                              <div style={{width:5,background:cg,flexShrink:0}}/>
+                              <div style={{flex:1,padding:"14px 16px",display:"flex",alignItems:"center",justifyContent:"space-between"}}>
+                                <div style={{display:"flex",alignItems:"center",gap:12}}>
+                                  <div style={{width:40,height:40,borderRadius:12,background:cl,display:"flex",alignItems:"center",justifyContent:"center",fontSize:18,flexShrink:0}}>
+                                    {CAT_ICONS[b.category]||"📦"}
+                                  </div>
+                                  <div>
+                                    <div style={{fontSize:14,fontWeight:700,color:T.text}}>{b.name}</div>
+                                    <div style={{display:"flex",gap:6,alignItems:"center",marginTop:3}}>
+                                      <span style={{fontSize:11,color:T.subtle}}>{b.category}</span>
+                                      {b.due_day && (
+                                        <span style={{fontSize:11,fontWeight:600,color:isOverdue?T.expense:isDueToday?"#D97706":isDueSoon?"#D97706":T.subtle,background:isOverdue?T.expenseLight:isDueToday||isDueSoon?"#FEF3C7":"transparent",padding:isOverdue||isDueToday||isDueSoon?"1px 6px":"0",borderRadius:99}}>
+                                          {isOverdue?"Venceu dia":"Vence dia"} {b.due_day}
+                                        </span>
+                                      )}
+                                    </div>
+                                  </div>
+                                </div>
+                                <div style={{display:"flex",alignItems:"center",gap:8}}>
+                                  <div style={{fontSize:16,fontWeight:800,color:c}}>{fmt(b.amount)}</div>
+                                  <button onClick={()=>deleteBill(b.id)} style={{width:28,height:28,borderRadius:8,border:"none",background:T.expenseLight,color:T.expense,fontSize:14,cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center"}}>×</button>
+                                </div>
+                              </div>
+                            </div>
+                          </Card>
+                        );
+                      })}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+
           {/* Bottom nav */}
-          <div style={{position:"fixed",bottom:0,left:"50%",transform:"translateX(-50%)",width:"100%",maxWidth:430,background:T.surface,borderTop:`1px solid ${T.border}`,display:"flex",alignItems:"center",justifyContent:"space-around",padding:"10px 20px 28px",boxSizing:"border-box",boxShadow:"0 -4px 24px rgba(15,23,42,0.08)"}}>
-            {[{id:"dashboard",icon:"📊",label:"Resumo"},{id:"history",icon:"📋",label:"Histórico"},{id:"add",icon:null},{id:"goals",icon:"🎯",label:"Metas"}].map(item=>{
+          <div style={{position:"fixed",bottom:0,left:"50%",transform:"translateX(-50%)",width:"100%",maxWidth:430,background:T.surface,borderTop:`1px solid ${T.border}`,display:"flex",alignItems:"center",justifyContent:"space-around",padding:"10px 12px 28px",boxSizing:"border-box",boxShadow:"0 -4px 24px rgba(15,23,42,0.08)"}}>
+            {[{id:"dashboard",icon:"📊",label:"Resumo"},{id:"history",icon:"📋",label:"Histórico"},{id:"add",icon:null},{id:"bills",icon:"📌",label:"Fixas"},{id:"goals",icon:"🎯",label:"Metas"}].map(item=>{
               if(item.id==="add") return (
                 <button key="add" onClick={()=>setScreen("add")} style={{background:"none",border:"none",cursor:"pointer",padding:0}}>
-                  <div style={{width:54,height:54,borderRadius:"50%",background:"linear-gradient(135deg,#1E40AF,#3730A3)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:28,color:"#fff",boxShadow:"0 6px 20px rgba(55,48,163,0.4)",marginTop:-20}}>+</div>
+                  <div style={{width:52,height:52,borderRadius:"50%",background:"linear-gradient(135deg,#1E40AF,#3730A3)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:26,color:"#fff",boxShadow:"0 6px 20px rgba(55,48,163,0.4)",marginTop:-18}}>+</div>
                 </button>
               );
               const active=screen===item.id;
               return (
-                <button key={item.id} onClick={()=>setScreen(item.id)} style={{display:"flex",flexDirection:"column",alignItems:"center",background:"none",border:"none",cursor:"pointer",padding:"4px 12px",gap:3}}>
-                  <span style={{fontSize:22,filter:active?"none":"grayscale(100%) opacity(0.4)"}}>{item.icon}</span>
+                <button key={item.id} onClick={()=>setScreen(item.id)} style={{display:"flex",flexDirection:"column",alignItems:"center",background:"none",border:"none",cursor:"pointer",padding:"4px 8px",gap:3}}>
+                  <span style={{fontSize:20,filter:active?"none":"grayscale(100%) opacity(0.4)"}}>{item.icon}</span>
                   <span style={{fontSize:10,fontWeight:active?700:500,color:active?"#3730A3":T.subtle}}>{item.label}</span>
                 </button>
               );
