@@ -86,19 +86,24 @@
       const [transactions, setTransactions] = useState([]);
       const [goals, setGoals] = useState([]);
       const [bills, setBills] = useState([]);
+      const [payments, setPayments] = useState([]); // bill_payments
       const [loading, setLoading] = useState(true);
       const [syncing, setSyncing] = useState(false);
       const [toast, setToast] = useState(null);
       const [filterMonth, setFilterMonth] = useState(new Date().getMonth());
-      const filterYear = new Date().getFullYear();
+      const [filterYear, setFilterYear] = useState(new Date().getFullYear());
       const [filterOwner, setFilterOwner] = useState("all");
       const [addGoalMode, setAddGoalMode] = useState(false);
       const [addBillMode, setAddBillMode] = useState(false);
       const [hidden, setHidden] = useState(false);
-      const fmtH = n => hidden ? "R$ ••••" : fmt(n);
       const [form, setForm] = useState({type:"expense",description:"",amount:"",category:"Alimentação",owner:"Erick",date:today()});
       const [goalForm, setGoalForm] = useState({name:"",target:"",owner:"Erick",saved:"0"});
       const [billForm, setBillForm] = useState({name:"",amount:"",category:"Moradia",owner:"Erick",due_day:"1"});
+
+      const fmtH = n => hidden ? "R$ ••••" : fmt(n);
+      const today_day = new Date().getDate();
+      const now_month = new Date().getMonth();
+      const now_year = new Date().getFullYear();
 
       function showToast(msg, type="success") {
         setToast({msg,type});
@@ -108,14 +113,16 @@
       useEffect(()=>{
         (async()=>{
           try {
-            const [{data:txs},{data:gs},{data:bs}] = await Promise.all([
+            const [{data:txs},{data:gs},{data:bs},{data:ps}] = await Promise.all([
               sb.from("transactions").select("*").order("date",{ascending:false}),
               sb.from("goals").select("*").order("id",{ascending:true}),
               sb.from("fixed_bills").select("*").order("due_day",{ascending:true}),
+              sb.from("bill_payments").select("*"),
             ]);
             setTransactions(txs||[]);
             setGoals(gs||[]);
             setBills(bs||[]);
+            setPayments(ps||[]);
           } catch(e){ showToast("Erro ao carregar","error"); }
           finally{ setLoading(false); }
         })();
@@ -140,8 +147,22 @@
             if(p.eventType==="DELETE") setBills(prev=>prev.filter(b=>b.id!==p.old.id));
             if(p.eventType==="UPDATE") setBills(prev=>prev.map(b=>b.id===p.new.id?p.new:b));
           }).subscribe();
-        return ()=>{ sb.removeChannel(chT); sb.removeChannel(chG); sb.removeChannel(chB); };
+        const chP = sb.channel("payments-rt")
+          .on("postgres_changes",{event:"*",schema:"public",table:"bill_payments"},p=>{
+            if(p.eventType==="INSERT") setPayments(prev=>[...prev,p.new]);
+            if(p.eventType==="DELETE") setPayments(prev=>prev.filter(x=>x.id!==p.old.id));
+          }).subscribe();
+        return ()=>{ sb.removeChannel(chT); sb.removeChannel(chG); sb.removeChannel(chB); sb.removeChannel(chP); };
       },[]);
+
+      // Helper: check if bill is paid in a given month/year
+      function isPaidInMonth(billId, month, year) {
+        return payments.some(p => p.bill_id===billId && p.month===month && p.year===year);
+      }
+
+      function getPayment(billId, month, year) {
+        return payments.find(p => p.bill_id===billId && p.month===month && p.year===year);
+      }
 
       async function addTransaction() {
         if(!form.description.trim()||!form.amount) return;
@@ -196,7 +217,6 @@
           name:billForm.name.trim(), amount:parseFloat(billForm.amount),
           category:billForm.category, owner:billForm.owner,
           due_day:parseInt(billForm.due_day)||1,
-          paid:false, transaction_id:null,
         });
         setSyncing(false);
         if(error){ showToast("Erro ao salvar","error"); return; }
@@ -205,39 +225,44 @@
         showToast("Conta fixa adicionada! 📌");
       }
 
-      async function togglePaid(bill) {
+      async function togglePaid(bill, month, year) {
         setSyncing(true);
-        if(!bill.paid) {
-          // Marcar como pago → cria despesa nas transações
+        const existing = getPayment(bill.id, month, year);
+        if(!existing) {
+          // Marcar como pago → cria despesa + registra pagamento
+          const payDate = `${year}-${String(month+1).padStart(2,"0")}-${String(bill.due_day||today_day).padStart(2,"0")}`;
           const {data:tx, error:txErr} = await sb.from("transactions").insert({
             type:"expense",
             description:`📌 ${bill.name}`,
             amount:parseFloat(bill.amount),
             category:bill.category,
             owner:bill.owner,
-            date:today(),
+            date:payDate,
           }).select().single();
           if(txErr){ showToast("Erro ao lançar despesa","error"); setSyncing(false); return; }
-          await sb.from("fixed_bills").update({paid:true, transaction_id:tx.id}).eq("id",bill.id);
+          await sb.from("bill_payments").insert({
+            bill_id:bill.id, transaction_id:tx.id, month, year,
+          });
           showToast("✅ Pago e lançado como despesa!");
         } else {
-          // Desfazer → remove a despesa gerada
-          if(bill.transaction_id) {
-            await sb.from("transactions").delete().eq("id",bill.transaction_id);
+          // Desfazer → remove despesa e pagamento
+          if(existing.transaction_id) {
+            await sb.from("transactions").delete().eq("id",existing.transaction_id);
           }
-          await sb.from("fixed_bills").update({paid:false, transaction_id:null}).eq("id",bill.id);
+          await sb.from("bill_payments").delete().eq("id",existing.id);
           showToast("↩️ Pagamento desfeito","info");
         }
         setSyncing(false);
       }
 
       async function deleteBill(bill) {
-        // Se estava paga, remove a transação associada também
-        if(bill.paid && bill.transaction_id) {
-          await sb.from("transactions").delete().eq("id",bill.transaction_id);
+        // Remove todas as transações associadas aos pagamentos desta conta
+        const billPays = payments.filter(p=>p.bill_id===bill.id && p.transaction_id);
+        for(const p of billPays) {
+          await sb.from("transactions").delete().eq("id",p.transaction_id);
         }
         await sb.from("fixed_bills").delete().eq("id",bill.id);
-        showToast("Removida","info");
+        showToast("Conta removida","info");
       }
 
       const stats = useMemo(()=>{
@@ -268,12 +293,12 @@
       const billStats = useMemo(()=>{
         const erickTotal = bills.filter(b=>b.owner==="Erick").reduce((s,b)=>s+parseFloat(b.amount),0);
         const biaTotal = bills.filter(b=>b.owner==="Bia").reduce((s,b)=>s+parseFloat(b.amount),0);
-        const paidTotal = bills.filter(b=>b.paid).reduce((s,b)=>s+parseFloat(b.amount),0);
-        const pendingTotal = bills.filter(b=>!b.paid).reduce((s,b)=>s+parseFloat(b.amount),0);
-        return {erickTotal,biaTotal,total:erickTotal+biaTotal,paidTotal,pendingTotal};
-      },[bills]);
-
-      const today_day = new Date().getDate();
+        const paidBills = bills.filter(b=>isPaidInMonth(b.id,filterMonth,filterYear));
+        const pendingBills = bills.filter(b=>!isPaidInMonth(b.id,filterMonth,filterYear));
+        const paidTotal = paidBills.reduce((s,b)=>s+parseFloat(b.amount),0);
+        const pendingTotal = pendingBills.reduce((s,b)=>s+parseFloat(b.amount),0);
+        return {erickTotal,biaTotal,total:erickTotal+biaTotal,paidTotal,pendingTotal,paidCount:paidBills.length};
+      },[bills,payments,filterMonth,filterYear]);
 
       if(loading) return (
         <div style={{display:"flex",alignItems:"center",justifyContent:"center",height:"100vh",background:"#0F172A",flexDirection:"column",gap:12}}>
@@ -292,9 +317,9 @@
           )}
 
           {/* Header */}
-          <div style={{background:"#0F172A",padding:"52px 20px 20px"}}>
-            {screen==="dashboard" && (
-              <div style={{display:"flex",gap:4,overflowX:"auto",paddingBottom:16,scrollbarWidth:"none"}}>
+          <div style={{background:"#0F172A",padding:"52px 20px 16px"}}>
+            {(screen==="dashboard"||screen==="bills") && (
+              <div style={{display:"flex",gap:4,overflowX:"auto",paddingBottom:14,scrollbarWidth:"none"}}>
                 {MONTHS_SHORT.map((m,i)=>(
                   <button key={i} onClick={()=>setFilterMonth(i)} style={{padding:"5px 14px",border:"none",borderRadius:99,cursor:"pointer",background:filterMonth===i?"#fff":"rgba(255,255,255,0.08)",color:filterMonth===i?"#0F172A":"rgba(255,255,255,0.5)",fontSize:12,fontWeight:filterMonth===i?700:400,whiteSpace:"nowrap",transition:"all 0.15s"}}>
                     {m}
@@ -302,19 +327,20 @@
                 ))}
               </div>
             )}
-            <div style={{color:"rgba(255,255,255,0.4)",fontSize:11,fontWeight:600,letterSpacing:2,textTransform:"uppercase",marginBottom:4}}>
-              {screen==="dashboard"?"Visão Geral":screen==="add"?"Novo Lançamento":screen==="history"?"Histórico":screen==="goals"?"Metas do Casal":"Contas Fixas"}
-            </div>
-            <div style={{color:"#fff",fontSize:26,fontWeight:800,letterSpacing:-0.5}}>
-              {screen==="dashboard"?`${MONTHS[filterMonth]} ${filterYear}`:screen==="add"?"Lançamento":screen==="history"?"Histórico":screen==="goals"?"Metas 🎯":"Fixas 📌"}
-            </div>
-            <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginTop:8}}>
-              {syncing && <div style={{color:"rgba(255,255,255,0.4)",fontSize:11}}>Sincronizando...</div>}
-              <div style={{flex:1}}/>
-              <button onClick={()=>setHidden(h=>!h)} style={{background:"rgba(255,255,255,0.1)",border:"none",borderRadius:99,padding:"6px 14px",color:"rgba(255,255,255,0.7)",fontSize:12,fontWeight:600,cursor:"pointer",display:"flex",alignItems:"center",gap:6}}>
+            <div style={{display:"flex",alignItems:"center",justifyContent:"space-between"}}>
+              <div>
+                <div style={{color:"rgba(255,255,255,0.4)",fontSize:11,fontWeight:600,letterSpacing:2,textTransform:"uppercase",marginBottom:2}}>
+                  {screen==="dashboard"?"Visão Geral":screen==="add"?"Novo Lançamento":screen==="history"?"Histórico":screen==="goals"?"Metas do Casal":"Contas Fixas"}
+                </div>
+                <div style={{color:"#fff",fontSize:24,fontWeight:800,letterSpacing:-0.5}}>
+                  {screen==="dashboard"?`${MONTHS[filterMonth]} ${filterYear}`:screen==="add"?"Lançamento":screen==="history"?"Histórico":screen==="goals"?"Metas 🎯":`${MONTHS[filterMonth]} 📌`}
+                </div>
+              </div>
+              <button onClick={()=>setHidden(h=>!h)} style={{background:"rgba(255,255,255,0.1)",border:"none",borderRadius:99,padding:"8px 14px",color:"rgba(255,255,255,0.7)",fontSize:12,fontWeight:600,cursor:"pointer",whiteSpace:"nowrap"}}>
                 {hidden?"👁 Mostrar":"🙈 Ocultar"}
               </button>
             </div>
+            {syncing && <div style={{color:"rgba(255,255,255,0.4)",fontSize:11,marginTop:4}}>Sincronizando...</div>}
           </div>
 
           {/* DASHBOARD */}
@@ -349,7 +375,7 @@
                     <div style={{fontSize:13,fontWeight:700,color:T.text}}>📌 Contas Fixas</div>
                     <button onClick={()=>setScreen("bills")} style={{fontSize:12,color:T.erick,background:"none",border:"none",cursor:"pointer",fontWeight:600,padding:0}}>Ver todas →</button>
                   </div>
-                  <Bar value={bills.filter(b=>b.paid).length} max={bills.length} color={T.income}/>
+                  <Bar value={billStats.paidCount} max={bills.length} color={T.income}/>
                   <div style={{display:"flex",gap:10,marginTop:12}}>
                     <div style={{flex:1,background:T.incomeLight,borderRadius:12,padding:"10px 14px"}}>
                       <div style={{fontSize:11,color:T.income,fontWeight:600,marginBottom:2}}>✅ Pagas</div>
@@ -360,7 +386,7 @@
                       <div style={{fontSize:16,fontWeight:800,color:T.expense}}>{fmtH(billStats.pendingTotal)}</div>
                     </div>
                   </div>
-                  <div style={{fontSize:11,color:T.subtle,marginTop:8,textAlign:"center"}}>{bills.filter(b=>b.paid).length} de {bills.length} pagas este mês</div>
+                  <div style={{fontSize:11,color:T.subtle,marginTop:8,textAlign:"center"}}>{billStats.paidCount} de {bills.length} pagas em {MONTHS[filterMonth]}</div>
                 </Card>
               )}
 
@@ -392,7 +418,7 @@
                 ) : stats.monthTx.slice(0,5).map((t,i)=>(
                   <div key={t.id} style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"11px 0",borderBottom:i<Math.min(stats.monthTx.length,5)-1?`1px solid ${T.border}`:"none"}}>
                     <div style={{display:"flex",alignItems:"center",gap:10}}>
-                      <div style={{width:38,height:38,borderRadius:12,fontSize:16,background:t.type==="income"?T.incomeLight:T.expenseLight,display:"flex",alignItems:"center",justifyContent:"center"}}>{t.description.startsWith("📌")?"📌":CAT_ICONS[t.category]||"📦"}</div>
+                      <div style={{width:38,height:38,borderRadius:12,fontSize:16,background:t.type==="income"?T.incomeLight:T.expenseLight,display:"flex",alignItems:"center",justifyContent:"center"}}>{t.description&&t.description.startsWith("📌")?"📌":CAT_ICONS[t.category]||"📦"}</div>
                       <div>
                         <div style={{fontSize:13,fontWeight:600,color:T.text}}>{t.description}</div>
                         <div style={{display:"flex",gap:5,alignItems:"center",marginTop:3}}>
@@ -469,7 +495,7 @@
               ) : (
                 <Card style={{padding:20}}>
                   {filteredHistory.map((t,i)=>{
-                    const isFixed = t.description && t.description.startsWith("📌");
+                    const isFixed = t.description&&t.description.startsWith("📌");
                     return (
                       <div key={t.id} style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"12px 0",borderBottom:i<filteredHistory.length-1?`1px solid ${T.border}`:"none"}}>
                         <div style={{display:"flex",alignItems:"center",gap:10}}>
@@ -478,14 +504,14 @@
                             <div style={{fontSize:13,fontWeight:600,color:T.text}}>{t.description}</div>
                             <div style={{display:"flex",gap:5,alignItems:"center",marginTop:3}}>
                               <OwnerBadge owner={t.owner}/>
-                              {isFixed && <span style={{fontSize:10,background:"#EEF2FF",color:"#3730A3",fontWeight:700,padding:"1px 6px",borderRadius:99}}>FIXA</span>}
+                              {isFixed&&<span style={{fontSize:10,background:"#EEF2FF",color:"#3730A3",fontWeight:700,padding:"1px 6px",borderRadius:99}}>FIXA</span>}
                               <span style={{fontSize:11,color:T.subtle}}>{t.date.slice(5).replace("-","/")}</span>
                             </div>
                           </div>
                         </div>
                         <div style={{display:"flex",alignItems:"center",gap:8}}>
                           <div style={{fontSize:14,fontWeight:700,color:t.type==="income"?T.income:T.expense}}>{t.type==="income"?"+":"-"}{fmtH(t.amount)}</div>
-                          {!isFixed && (
+                          {!isFixed&&(
                             <button onClick={()=>deleteTransaction(t.id)} style={{width:28,height:28,borderRadius:8,border:"none",background:T.expenseLight,color:T.expense,fontSize:14,cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center"}}>×</button>
                           )}
                         </div>
@@ -526,7 +552,7 @@
                   </div>
                 </Card>
               )}
-              {goals.length===0&&!addGoalMode && (
+              {goals.length===0&&!addGoalMode&&(
                 <Card style={{padding:20}}><EmptyState icon="🎯" title="Nenhuma meta ainda" sub="Criem metas juntos e acompanhem o progresso!"/></Card>
               )}
               {goals.map(g=>{
@@ -550,7 +576,7 @@
                     <div style={{fontSize:12,color:T.subtle,marginTop:6,marginBottom:14}}>Meta: {fmtH(g.target)} · Faltam {fmtH(Math.max(0,parseFloat(g.target)-parseFloat(g.saved)))}</div>
                     <div style={{display:"flex",gap:6}}>
                       {[50,100,500].map(v=>(
-                        <button key={v} onClick={()=>updateGoalSaved(g.id,v)} style={{flex:1,padding:"8px 0",border:`1.5px solid ${c}`,borderRadius:10,background:cl,color:c,fontSize:12,fontWeight:700,cursor:"pointer"}}>+{fmtH(v)}</button>
+                        <button key={v} onClick={()=>updateGoalSaved(g.id,v)} style={{flex:1,padding:"8px 0",border:`1.5px solid ${c}`,borderRadius:10,background:cl,color:c,fontSize:12,fontWeight:700,cursor:"pointer"}}>+{fmt(v)}</button>
                       ))}
                     </div>
                   </Card>
@@ -567,21 +593,21 @@
                 <Card style={{padding:16,background:"linear-gradient(135deg,#1E40AF,#2563EB)",border:"none"}}>
                   <div style={{fontSize:11,color:"rgba(255,255,255,0.6)",fontWeight:600,marginBottom:4}}>ERICK</div>
                   <div style={{fontSize:22,fontWeight:800,color:"#fff"}}>{fmtH(billStats.erickTotal)}</div>
-                  <div style={{fontSize:11,color:"rgba(255,255,255,0.5)",marginTop:2}}>{bills.filter(b=>b.owner==="Erick").length} contas</div>
+                  <div style={{fontSize:11,color:"rgba(255,255,255,0.5)",marginTop:2}}>{bills.filter(b=>b.owner==="Erick").length} contas/mês</div>
                 </Card>
                 <Card style={{padding:16,background:"linear-gradient(135deg,#BE185D,#DB2777)",border:"none"}}>
                   <div style={{fontSize:11,color:"rgba(255,255,255,0.6)",fontWeight:600,marginBottom:4}}>BIA</div>
                   <div style={{fontSize:22,fontWeight:800,color:"#fff"}}>{fmtH(billStats.biaTotal)}</div>
-                  <div style={{fontSize:11,color:"rgba(255,255,255,0.5)",marginTop:2}}>{bills.filter(b=>b.owner==="Bia").length} contas</div>
+                  <div style={{fontSize:11,color:"rgba(255,255,255,0.5)",marginTop:2}}>{bills.filter(b=>b.owner==="Bia").length} contas/mês</div>
                 </Card>
               </div>
 
               <Card style={{padding:20}}>
                 <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}}>
-                  <div style={{fontSize:13,fontWeight:700,color:T.text}}>Progresso do mês</div>
-                  <span style={{fontSize:12,color:T.muted}}>{bills.filter(b=>b.paid).length}/{bills.length} pagas</span>
+                  <div style={{fontSize:13,fontWeight:700,color:T.text}}>Progresso — {MONTHS[filterMonth]}</div>
+                  <span style={{fontSize:12,color:T.muted}}>{billStats.paidCount}/{bills.length} pagas</span>
                 </div>
-                <Bar value={bills.filter(b=>b.paid).length} max={bills.length||1} color={T.income}/>
+                <Bar value={billStats.paidCount} max={bills.length||1} color={T.income}/>
                 <div style={{display:"flex",gap:10,marginTop:12}}>
                   <div style={{flex:1,background:T.incomeLight,borderRadius:12,padding:"10px 14px"}}>
                     <div style={{fontSize:11,color:T.income,fontWeight:600,marginBottom:2}}>✅ Pagas</div>
@@ -591,9 +617,6 @@
                     <div style={{fontSize:11,color:T.expense,fontWeight:600,marginBottom:2}}>⏳ Pendentes</div>
                     <div style={{fontSize:16,fontWeight:800,color:T.expense}}>{fmtH(billStats.pendingTotal)}</div>
                   </div>
-                </div>
-                <div style={{marginTop:12,padding:"10px 14px",background:"#F8FAFC",borderRadius:12,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
-                  <span style={{fontSize:12,color:T.muted,fontWeight:600}}>💡 Ao marcar como pago, a despesa é lançada automaticamente no saldo</span>
                 </div>
               </Card>
 
@@ -634,7 +657,7 @@
                 </Card>
               )}
 
-              {bills.length===0&&!addBillMode && (
+              {bills.length===0&&!addBillMode&&(
                 <Card style={{padding:20}}><EmptyState icon="📌" title="Nenhuma conta fixa" sub="Adicione as contas mensais de vocês!"/></Card>
               )}
 
@@ -652,9 +675,9 @@
                     </div>
                     <div style={{display:"flex",flexDirection:"column",gap:8}}>
                       {ownerBills.map(b=>{
-                        const isPaid = b.paid;
-                        const isOverdue = !isPaid && b.due_day < today_day;
-                        const isDueSoon = !isPaid && b.due_day >= today_day && b.due_day <= today_day+3;
+                        const isPaid = isPaidInMonth(b.id,filterMonth,filterYear);
+                        const isOverdue = !isPaid && b.due_day < today_day && filterMonth===now_month && filterYear===now_year;
+                        const isDueSoon = !isPaid && b.due_day>=today_day && b.due_day<=today_day+3 && filterMonth===now_month && filterYear===now_year;
                         return (
                           <Card key={b.id} style={{padding:0,overflow:"hidden",opacity:isPaid?0.8:1,transition:"opacity 0.2s"}}>
                             <div style={{display:"flex",alignItems:"stretch"}}>
@@ -669,26 +692,20 @@
                                       <div style={{fontSize:14,fontWeight:700,color:isPaid?T.muted:T.text,textDecoration:isPaid?"line-through":"none"}}>{b.name}</div>
                                       <div style={{display:"flex",gap:6,alignItems:"center",marginTop:3,flexWrap:"wrap"}}>
                                         <span style={{fontSize:11,color:T.subtle}}>{b.category}</span>
-                                        {!isPaid && b.due_day && (
+                                        {!isPaid&&b.due_day&&(
                                           <span style={{fontSize:11,fontWeight:600,color:isOverdue?T.expense:isDueSoon?"#D97706":T.subtle,background:isOverdue?T.expenseLight:isDueSoon?"#FEF3C7":"transparent",padding:isOverdue||isDueSoon?"1px 6px":"0",borderRadius:99}}>
                                             {isOverdue?"⚠️ Venceu dia":"Vence dia"} {b.due_day}
                                           </span>
                                         )}
-                                        {isPaid && <span style={{fontSize:11,color:T.income,fontWeight:600}}>✓ Lançado no saldo</span>}
+                                        {isPaid&&<span style={{fontSize:11,color:T.income,fontWeight:600}}>✓ Lançado no saldo</span>}
                                       </div>
                                     </div>
                                   </div>
                                   <div style={{fontSize:16,fontWeight:800,color:isPaid?T.muted:c,flexShrink:0}}>{fmtH(b.amount)}</div>
                                 </div>
                                 <div style={{display:"flex",gap:8}}>
-                                  <button onClick={()=>togglePaid(b)} disabled={syncing} style={{
-                                    flex:1,padding:"9px 0",border:"none",borderRadius:10,cursor:"pointer",
-                                    fontWeight:700,fontSize:13,transition:"all 0.2s",
-                                    background:isPaid?"#F3F4F6":T.incomeLight,
-                                    color:isPaid?T.muted:T.income,
-                                    opacity:syncing?0.6:1,
-                                  }}>
-                                    {isPaid?"↩️ Desfazer pagamento":"✅ Marcar como pago"}
+                                  <button onClick={()=>togglePaid(b,filterMonth,filterYear)} disabled={syncing} style={{flex:1,padding:"9px 0",border:"none",borderRadius:10,cursor:"pointer",fontWeight:700,fontSize:13,transition:"all 0.2s",background:isPaid?"#F3F4F6":T.incomeLight,color:isPaid?T.muted:T.income,opacity:syncing?0.6:1}}>
+                                    {isPaid?"↩️ Desfazer":"✅ Marcar como pago"}
                                   </button>
                                   <button onClick={()=>deleteBill(b)} style={{width:36,height:36,borderRadius:10,border:"none",background:T.expenseLight,color:T.expense,fontSize:14,cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0}}>×</button>
                                 </div>
