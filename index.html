@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0" />
-  <title>Finanças-Bia-Erick ❤️</title>
+  <title>Finanças do Casal 💑</title>
   <meta name="theme-color" content="#0F172A" />
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
@@ -40,10 +40,10 @@
       text: "#0F172A", muted: "#64748B", subtle: "#94A3B8",
     };
 
-    const CATEGORIES = ["Casa","Alimentação","Transporte","Saúde","Educação","Lazer","Roupas","Assinaturas","Investimento","Outros"];
+    const CATEGORIES = ["Moradia","Alimentação","Transporte","Saúde","Educação","Lazer","Roupas","Assinaturas","Investimento","Outros"];
     const MONTHS = ["Janeiro","Fevereiro","Março","Abril","Maio","Junho","Julho","Agosto","Setembro","Outubro","Novembro","Dezembro"];
     const MONTHS_SHORT = ["Jan","Fev","Mar","Abr","Mai","Jun","Jul","Ago","Set","Out","Nov","Dez"];
-    const CAT_ICONS = {"Casa":"🏠","Alimentação":"🛒","Transporte":"🚗","Saúde":"❤️","Educação":"📚","Lazer":"🎉","Roupas":"👗","Assinaturas":"📱","Investimento":"📈","Outros":"📦"};
+    const CAT_ICONS = {"Moradia":"🏠","Alimentação":"🛒","Transporte":"🚗","Saúde":"❤️","Educação":"📚","Lazer":"🎉","Roupas":"👗","Assinaturas":"📱","Investimento":"📈","Outros":"📦"};
 
     const fmt = n => new Intl.NumberFormat("pt-BR",{style:"currency",currency:"BRL"}).format(n||0);
     const today = () => new Date().toISOString().slice(0,10);
@@ -96,6 +96,7 @@
       const [addGoalMode, setAddGoalMode] = useState(false);
       const [addBillMode, setAddBillMode] = useState(false);
       const [hidden, setHidden] = useState(false);
+      const [processingBill, setProcessingBill] = useState(null);
       const [form, setForm] = useState({type:"expense",description:"",amount:"",category:"Alimentação",owner:"Erick",date:today()});
       const [goalForm, setGoalForm] = useState({name:"",target:"",owner:"Erick",saved:"0"});
       const [billForm, setBillForm] = useState({name:"",amount:"",category:"Moradia",owner:"Erick",due_day:"1"});
@@ -131,7 +132,7 @@
       useEffect(()=>{
         const chT = sb.channel("tx-rt")
           .on("postgres_changes",{event:"*",schema:"public",table:"transactions"},p=>{
-            if(p.eventType==="INSERT") setTransactions(prev=>[p.new,...prev]);
+            if(p.eventType==="INSERT") setTransactions(prev=>prev.some(t=>t.id===p.new.id)?prev:[p.new,...prev]);
             if(p.eventType==="DELETE") setTransactions(prev=>prev.filter(t=>t.id!==p.old.id));
             if(p.eventType==="UPDATE") setTransactions(prev=>prev.map(t=>t.id===p.new.id?p.new:t));
           }).subscribe();
@@ -149,7 +150,7 @@
           }).subscribe();
         const chP = sb.channel("payments-rt")
           .on("postgres_changes",{event:"*",schema:"public",table:"bill_payments"},p=>{
-            if(p.eventType==="INSERT") setPayments(prev=>[...prev,p.new]);
+            if(p.eventType==="INSERT") setPayments(prev=>prev.some(x=>x.id===p.new.id)?prev:[...prev,p.new]);
             if(p.eventType==="DELETE") setPayments(prev=>prev.filter(x=>x.id!==p.old.id));
           }).subscribe();
         return ()=>{ sb.removeChannel(chT); sb.removeChannel(chG); sb.removeChannel(chB); sb.removeChannel(chP); };
@@ -226,7 +227,8 @@
       }
 
       async function togglePaid(bill, month, year) {
-        setSyncing(true);
+        if(processingBill===bill.id) return;
+        setProcessingBill(bill.id);
         const existing = getPayment(bill.id, month, year);
         if(!existing) {
           // Marcar como pago → cria despesa + registra pagamento
@@ -239,7 +241,7 @@
             owner:bill.owner,
             date:payDate,
           }).select().single();
-          if(txErr){ showToast("Erro ao lançar despesa","error"); setSyncing(false); return; }
+          if(txErr){ showToast("Erro ao lançar despesa","error"); setProcessingBill(null); return; }
           await sb.from("bill_payments").insert({
             bill_id:bill.id, transaction_id:tx.id, month, year,
           });
@@ -252,7 +254,7 @@
           await sb.from("bill_payments").delete().eq("id",existing.id);
           showToast("↩️ Pagamento desfeito","info");
         }
-        setSyncing(false);
+        setProcessingBill(null);
       }
 
       async function deleteBill(bill) {
@@ -511,9 +513,7 @@
                         </div>
                         <div style={{display:"flex",alignItems:"center",gap:8}}>
                           <div style={{fontSize:14,fontWeight:700,color:t.type==="income"?T.income:T.expense}}>{t.type==="income"?"+":"-"}{fmtH(t.amount)}</div>
-                          {!isFixed&&(
-                            <button onClick={()=>deleteTransaction(t.id)} style={{width:28,height:28,borderRadius:8,border:"none",background:T.expenseLight,color:T.expense,fontSize:14,cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center"}}>×</button>
-                          )}
+                          <button onClick={()=>deleteTransaction(t.id)} style={{width:28,height:28,borderRadius:8,border:"none",background:T.expenseLight,color:T.expense,fontSize:14,cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center"}}>×</button>
                         </div>
                       </div>
                     );
@@ -704,8 +704,8 @@
                                   <div style={{fontSize:16,fontWeight:800,color:isPaid?T.muted:c,flexShrink:0}}>{fmtH(b.amount)}</div>
                                 </div>
                                 <div style={{display:"flex",gap:8}}>
-                                  <button onClick={()=>togglePaid(b,filterMonth,filterYear)} disabled={syncing} style={{flex:1,padding:"9px 0",border:"none",borderRadius:10,cursor:"pointer",fontWeight:700,fontSize:13,transition:"all 0.2s",background:isPaid?"#F3F4F6":T.incomeLight,color:isPaid?T.muted:T.income,opacity:syncing?0.6:1}}>
-                                    {isPaid?"↩️ Desfazer":"✅ Marcar como pago"}
+                                  <button onClick={()=>togglePaid(b,filterMonth,filterYear)} disabled={processingBill===b.id} style={{flex:1,padding:"9px 0",border:"none",borderRadius:10,cursor:"pointer",fontWeight:700,fontSize:13,transition:"all 0.2s",background:isPaid?"#F3F4F6":T.incomeLight,color:isPaid?T.muted:T.income,opacity:processingBill===b.id?0.6:1}}>
+                                    {processingBill===b.id?"Processando...":isPaid?"↩️ Desfazer":"✅ Marcar como pago"}
                                   </button>
                                   <button onClick={()=>deleteBill(b)} style={{width:36,height:36,borderRadius:10,border:"none",background:T.expenseLight,color:T.expense,fontSize:14,cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0}}>×</button>
                                 </div>
